@@ -11,7 +11,7 @@ library(furrr)
 library(patchwork)
 
 # Figure dimension constants (golden ratio proportions)
-H <- 3
+H <- 8
 goldenratio <- (1 + sqrt(5)) / 2
 
 # setting up parallel processing for furrr including number of cores used and 
@@ -182,9 +182,11 @@ as.data.frame(maxeigenval) %>%
 maxeigenval_v2 %>%
   ggplot(aes(x = ss, y = maxeigen)) +
     geom_point(size = 1.2, alpha = 0.3, colour = 'darkblue') +
+    geom_hline(yintercept = 1,   colour = "black") +
+    geom_hline(yintercept = 2,   colour = "darkgrey", linetype = "dashed") +
+    geom_hline(yintercept = 0.5, colour = "darkgrey", linetype = "dashed") +
     xlab("Sample size") +
     ylab("Normalised dominant eigenvalue") +
-    labs(colour = "Sample size") +
     theme_bw() +
     theme(
       axis.text  = element_text(size = 10),
@@ -194,6 +196,7 @@ maxeigenval_v2 %>%
 paral
 ```
 
+## Figure 2ab: MaxEigen estimates across sample sizes (POLYMOD)
 
 ```{r polymod-density}
 # Density plot: tighter distributions at larger sample sizes indicate convergence
@@ -201,6 +204,9 @@ maxeigenval_v2 %>%
   filter(ss%in%x) %>% 
   ggplot(aes(x = maxeigen, colour = as.factor(ss))) +
     geom_density() +
+    geom_vline(xintercept = 1,   colour = "black") +
+    geom_vline(xintercept = 2,   colour = "darkgrey", linetype = "dashed") +
+    geom_vline(xintercept = 0.5, colour = "darkgrey", linetype = "dashed") +
     xlab("Normalised dominant eigenvalue") +
     ylab("Density") +
     labs(colour = "Sample size") +
@@ -212,18 +218,18 @@ maxeigenval_v2 %>%
     coord_flip() -> density_plot
 density_plot
 
-paral + density_plot + plot_layout(axis_titles = "collect_y") 
+paral + density_plot + plot_layout(axis_titles = "collect_y") -> polymod
 
 
 ```
 
-## Figure 2: R_t estimates across sample sizes
+## Figure 2b: R_t estimates across sample sizes (Social Contact Survey)
 
 Uses a pre-processed contact dataset to estimate the effective reproduction
 number at varying sample sizes. The weighted mean of squared contacts
 (weighted by age-group size) is used as the key statistic.
 
-**Data required:** `contactsperson_withkids6.Rdata` and `Rall.Rdata`
+**Data required:** `contactsperson_withkids6.Rdata` 
 (pre-computed simulation output).
 
 ```{r rt-setup}
@@ -297,32 +303,30 @@ for (ss in x) {
   }
   i <- i + 1
 }
-save(Rall, file = "Rall.Rdata")
-```
-
-```{r rt-load}
-# Load pre-computed Rall matrix (rows = sample sizes, cols = simulation reps).
-# Sample sizes run from the full dataset size down to 200 in steps of 100.
-
-load("Rall.Rdata")
 ```
 
 ```{r rt-normalise}
 norm_const_rt <- mean(Rall[1, ])   # largest sample size is first row
 Rall <- Rall / norm_const_rt
-```
-
-```{r figure2}
 as_tibble(Rall) -> Rall
 Rall$SampleSize <- x
+
+save(Rall, file = "Rall.Rdata")
+
+```
+
+```{r figure2cd}
+# Sample sizes run from the full dataset size down to 200 in steps of 100.
+
+load("Rall.Rdata")
 
 Rall %>%
   pivot_longer(cols = -SampleSize, names_to = "simno", values_to = "Rest") %>%
   ggplot(aes(x = SampleSize, y = Rest)) +
   geom_point(size = 1.8, colour = "darkblue", alpha = 0.4) +
-  geom_hline(yintercept = 1,   colour = "black") +
-  geom_hline(yintercept = 2,   colour = "darkgrey", linetype = "dashed") +
-  geom_hline(yintercept = 0.5, colour = "darkgrey", linetype = "dashed") +
+#  geom_hline(yintercept = 1,   colour = "black") +
+#  geom_hline(yintercept = 2,   colour = "darkgrey", linetype = "dashed") +
+#  geom_hline(yintercept = 0.5, colour = "darkgrey", linetype = "dashed") +
   xlab("Sample size") +
   ylab(expression("Normalised " * R[t])) +
   theme_bw() +
@@ -331,10 +335,29 @@ Rall %>%
     axis.title = element_text(size = 14)
   ) -> p2
 
-ggsave("Figure2.png", p2, height = H, width = H * goldenratio,
+
+
+Rall %>%
+  filter(SampleSize %in% x) %>%
+  pivot_longer(cols = -SampleSize, names_to = "simno", values_to = "Rest") %>%
+  ggplot(aes(y = Rest, colour = as.factor(SampleSize))) +
+    geom_density() +
+    xlab("Density") +
+    ylab(expression("Normalised " * R[t])) +
+    labs(colour = "Sample size") +
+    theme_bw() +
+    theme(
+      axis.text  = element_text(size = 10),
+      axis.title = element_text(size = 14)
+    ) -> density_plot2
+
+p2 + density_plot2 + plot_layout(axes = "collect_y") & ylim(0,4)-> SCS
+
+polymod / SCS + plot_annotation(tag_levels = "A")-> f2
+
+f2 
+
+ggsave("Figure2.png", f2, height = H, width = H * goldenratio,
        dpi = 600, device = "png")
-p2
-
-
 
 ```
