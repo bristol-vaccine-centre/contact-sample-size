@@ -1,0 +1,357 @@
+---
+title: "Sample size requirements for contact surveys"
+format: html
+---
+
+```{r setup}
+#| message: false
+library(tidyverse)
+library(boot)
+library(furrr)
+library(patchwork)
+
+# Figure dimension constants (golden ratio proportions)
+H <- 3
+goldenratio <- (1 + sqrt(5)) / 2
+
+# setting up parallel processing for furrr including number of cores used and 
+# random seeding
+no_cores <- availableCores() - 1
+plan(multisession, workers = no_cores)
+
+```
+
+## Figure 1: Sample sizes in the contact survey literature
+
+Reads a rapid-review dataset, filters to included studies, and plots the
+distribution of sample sizes (capped at 10,000 for display).
+
+```{r figure1}
+reviewdata <- read.csv("../rapidreviewdata_update.csv")
+
+reviewdata %>%
+  filter(INCLUDE. == "YES") %>%
+  group_by(Title, COUNTRY, SAMPLE.SIZE) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  mutate(ss2 = ifelse(SAMPLE.SIZE > 10000, 10000, SAMPLE.SIZE)) %>%
+  ggplot(aes(x = ss2)) +
+  geom_histogram(binwidth = 200, color = "darkblue", fill = "lightblue") +
+  xlab("Sample size") +
+  ylab("Frequency") +
+  theme_bw() +
+  theme(
+    axis.text  = element_text(size = 14),
+    axis.title = element_text(size = 20)
+  ) -> f1
+
+ggsave("Figure1.png", f1, height = H, width = H * goldenratio,
+       dpi = 600, device = "png")
+f1
+```
+
+## POLYMOD eigenvalue analysis
+
+Sub-samples the POLYMOD dataset at a range of sample sizes, constructs a
+contact matrix with 10-year age bands, and extracts the dominant eigenvalue
+of each sampled matrix. Repeating this many times shows how stable the
+dominant eigenvalue (a proxy for R0) is as a function of sample size.
+
+**Data required:** `3874557/2008_Mossong_POLYMOD_participant_common.csv` and
+`3874557/2008_Mossong_POLYMOD_contact_common.csv` (Zenodo record 3874557).
+
+```{r polymod-setup}
+participantdata <- read.csv(
+  "3874557/2008_Mossong_POLYMOD_participant_common.csv"
+)
+contactdata <- read.csv(
+  "3874557/2008_Mossong_POLYMOD_contact_common.csv"
+)
+
+maxsize  <- nrow(participantdata)   # total participants in full dataset
+x        <- c(100, 500, 1000, 1500, 2000, 3000, 4000, 5000)  # sample sizes
+x2       <- c(100,5800,-100)
+numreps  <- 200                     # repetitions per sample size
+
+maxeigenval <- array(NA, dim = c(length(x), numreps))
+```
+
+```{r polymod-simulation}
+#| cache: true   # simulation is slow; cache to avoid re-running on re-render
+
+for (i in seq_along(x)) {
+  ss <- x[i]
+  for (nr in 1:numreps) {
+
+    # Randomly include each participant with probability ss/maxsize,
+    # assign 10-year age bands (capped at 70+), join to contacts,
+    # compute per-participant contact rates, and reshape to a matrix.
+    participantdata %>%
+      rowwise() %>%
+      mutate(
+        include = rbinom(1, 1, prob = ss / maxsize),
+        agegp1  = ifelse(part_age <= 70, floor(part_age / 10), floor(70 / 10))
+      ) %>%
+      add_count(agegp1, wt = include) %>%
+      right_join(contactdata %>% filter(!is.na(cnt_age_exact)),
+                 by = "part_id") %>%
+      filter(include == 1) %>%
+      mutate(
+        agegp2 = ifelse(cnt_age_exact <= 70,
+                        floor(cnt_age_exact / 10), floor(70 / 10))
+      ) %>%
+      group_by(agegp1, agegp2, n) %>%
+      summarise(totalcontacts = n(), .groups = "drop_last") %>%
+      mutate(contactrate = totalcontacts / n,
+             contactrate = ifelse(is.na(contactrate), 0, contactrate)) %>%
+      pivot_wider(id_cols = agegp1, names_from = agegp2,
+                  values_from = contactrate, values_fill = 0) %>%
+      replace_na(list(Value = 0)) -> contactmatrix
+
+    # Dominant eigenvalue of the contact matrix, excluding the oldest age group
+    L1 <- ncol(contactmatrix)
+    maxeigenval[i, nr] <- round(
+      max(Re(eigen(contactmatrix[1:(L1 - 2), 2:(L1 - 1)])$values)), 3
+    )
+  }
+}
+```
+
+```{r polymod-simulation-v2}
+#| cache: true   # simulation is slow; cache to avoid re-running on re-render
+
+# Extract the per-draw computation into a plain function.
+# Takes a sample size ss, runs the full sub-sampling pipeline once,
+# and returns the scalar dominant eigenvalue of the contact matrix.
+compute_eigenval <- function(ss) {
+  participantdata %>%
+    rowwise() %>%
+    mutate(
+      include = rbinom(1, 1, prob = ss / maxsize),
+      agegp1  = ifelse(part_age <= 70, floor(part_age / 10), floor(70 / 10))
+    ) %>%
+    add_count(agegp1, wt = include) %>%
+    right_join(contactdata %>% filter(!is.na(cnt_age_exact)),
+               by = "part_id") %>%
+    filter(include == 1) %>%
+    mutate(
+      agegp2 = ifelse(cnt_age_exact <= 70,
+                      floor(cnt_age_exact / 10), floor(70 / 10))
+    ) %>%
+    group_by(agegp1, agegp2, n) %>%
+    summarise(totalcontacts = n(), .groups = "drop_last") %>%
+    mutate(contactrate = totalcontacts / n,
+           contactrate = ifelse(is.na(contactrate), 0, contactrate)) %>%
+    pivot_wider(id_cols = agegp1, names_from = agegp2,
+                values_from = contactrate, values_fill = 0) %>%
+    replace_na(list(Value = 0)) -> contactmatrix
+
+  L1 <- ncol(contactmatrix)
+  round(max(Re(eigen(contactmatrix[1:(L1 - 2), 2:(L1 - 1)])$values)), 3)
+}
+
+# Build a tidy grid of every (sample size × rep) combination and map the
+# function over it. Each row is one independent draw; randomness comes from
+# rbinom inside compute_eigenval, so the rep column is just a counter.
+maxeigenval_v2 <- crossing(ss = x2, rep = seq_len(numreps)) %>%
+  mutate(maxeigen = future_map_dbl(ss, compute_eigenval,
+                                   .options = furrr_options(seed = TRUE),
+                                   .progress = TRUE))
+```
+
+```{r polymod-normalise}
+norm_const <- mean(maxeigenval[length(x), ])
+maxeigenval <- maxeigenval / norm_const
+maxeigenval_v2 <- maxeigenval_v2 %>% mutate(maxeigen = maxeigen / norm_const)
+```
+
+```{r polymod-scatter}
+# Scatter of normalised dominant eigenvalues across all reps, by sample size
+as.data.frame(maxeigenval) %>%
+  mutate(SampleSize = x) %>%
+  pivot_longer(-SampleSize, names_to = "rep", values_to = "maxeigen") %>% 
+    ggplot(aes(x = SampleSize, y = maxeigen)) +
+    geom_point(size = 1.2, colour = "darkblue", alpha = 0.3) +
+    xlab("Sample size") +
+    ylab("Normalised dominant eigenvalue") +
+    theme_bw() +
+    theme(
+      axis.text  = element_text(size = 10),
+      axis.title = element_text(size = 14)
+    ) -> original
+
+maxeigenval_v2 %>%
+  ggplot(aes(x = ss, y = maxeigen)) +
+    geom_point(size = 1.2, colour = "darkblue", alpha = 0.3) +
+    xlab("Sample size") +
+    ylab("Normalised dominant eigenvalue") +
+    theme_bw() +
+    theme(
+      axis.text  = element_text(size = 10),
+      axis.title = element_text(size = 14)
+    ) -> paral 
+
+original + paral + plot_layout(axes = "collect_y") & 
+  ylim(min(0.5), max(1.5))
+```
+
+```{r polymod-diffs}
+# Absolute difference in eigenvalue between rep 1 and rep 2, normalised by
+# the value at the largest sample size — a simple convergence diagnostic.
+diffs <- abs(maxeigenval[, 1] - maxeigenval[, 2])
+
+data.frame(SampleSize = x, normdiff = diffs / diffs[length(diffs)]) %>%
+  ggplot(aes(x = SampleSize, y = normdiff)) +
+  geom_point(size = 2) +
+  geom_line() +
+  xlab("Sample size") +
+  ylab("Normalised difference (reps 1 vs 2)") +
+  theme_bw() +
+  theme(
+    axis.text  = element_text(size = 10),
+    axis.title = element_text(size = 14)
+  )
+```
+
+```{r polymod-density}
+as.data.frame(maxeigenval) -> mymatrix
+rownames(mymatrix) <- x
+
+# Density plot: tighter distributions at larger sample sizes indicate convergence
+mymatrix %>%
+  tibble::rownames_to_column(var = "ss")%>%
+  mutate(ss = as.numeric(ss)) %>% 
+  pivot_longer(-ss, names_to = "rep", values_to = "maxeigen") %>%
+  ggplot(aes(x = maxeigen, colour = as.factor(ss))) +
+    geom_density() +
+    xlab("Normalised dominant eigenvalue") +
+    ylab("Density") +
+    labs(colour = "Sample size") +
+    theme_bw()+
+    coord_flip() -> density_plot
+
+
+
+
+```
+
+## Figure 2: R_t estimates across sample sizes
+
+Uses a pre-processed contact dataset to estimate the effective reproduction
+number at varying sample sizes. The weighted mean of squared contacts
+(weighted by age-group size) is used as the key statistic.
+
+**Data required:** `contactsperson_withkids6.Rdata` and `Rall.Rdata`
+(pre-computed simulation output).
+
+```{r rt-setup}
+# Weighted mean helper: sum(degree^2 * weight) / sum(weight)
+myweightedmean <- function(DD, ix) {
+  sum(DD[ix, 1]^2 * DD[ix, 2]) / sum(DD[ix, 2])
+}
+
+# Compute per-person effective degree (number of potentially infectious contacts)
+degreeperson0 <- function(contactsperson, inf_child, CTF1) {
+  contactsperson %>%
+    filter(dcat >= 0) %>%
+    mutate(
+      infect  = ifelse(age <= 11, inf_child, 1),
+      Num1    = ifelse(contacttrace == TRUE,
+                       ((1 - CTF1) * Numbers) * (1 - comply) * infect,
+                       Numbers * (1 - comply) * infect),
+      homenum  = Num1 * Home,
+      worknum  = Num1 * WorkSchool,
+      othernum = Num1 * OtherLeisure + Num1 * Travel
+    ) %>%
+    group_by(PID) %>%
+    summarise(
+      degree  = sum(homenum) + sum(worknum) + sum(othernum),
+      totdcat = sum(dcat),
+      wcon    = sum(homenum * dcat2) + sum(worknum * dcat2) +
+                sum(othernum * dcat2),
+      age       = mean(age),
+      ageweight = mean(ageweight),
+      .groups   = "drop"
+    )
+}
+```
+
+```{r rt-calibrate}
+load("contactsperson_withkids6.Rdata")
+
+# Set compliance and contact tracing to zero (baseline, no interventions)
+contactsperson$comply       <- 0 * contactsperson$age
+contactsperson$contacttrace <- rep(FALSE, nrow(contactsperson))
+
+# Calibrate multiplier so that weighted mean degree gives meanR0 = 2.8
+degall  <- degreeperson0(contactsperson, inf_child = 1, CTF1 = 0)
+meanR0  <- 2.8
+mult1   <- meanR0 / myweightedmean(cbind(degall$wcon, degall$ageweight), TRUE)
+```
+
+```{r rt-simulation}
+#| cache: true
+infchild <- 1
+
+PIDs    <- unique(contactsperson$PID)
+#x       <- c(seq(length(PIDs), 100, -100))
+x       <- c(seq(5800, 100, -100))
+numreps <- 200
+Rall    <- matrix(0, nrow = length(x), ncol = numreps)
+i <- 1
+for (ss in x) {
+  for (nr in 1:numreps) {
+    rind <- c()
+    contactsperson$use <- contactsperson$PID * 0
+    mysample <- sample.int(length(PIDs), ss)
+    for (s in mysample) {
+      ix <- which(contactsperson$PID == mysample[s])
+      contactsperson$use[ix] <- 1
+    }
+    degall <- degreeperson0(contactsperson[contactsperson$use == 1, ], infchild, 0.0)
+    rind   <- rbind(rind, cbind(degall$wcon, degall$ageweight))
+    myboot <- myweightedmean(rind)
+    Rall[i, nr] <- mult1 * mean(myboot)
+  }
+  i <- i + 1
+}
+save(Rall, file = "Rall.Rdata")
+```
+
+```{r rt-load}
+# Load pre-computed Rall matrix (rows = sample sizes, cols = simulation reps).
+# Sample sizes run from the full dataset size down to 200 in steps of 100.
+
+load("Rall.Rdata")
+```
+
+```{r rt-normalise}
+norm_const_rt <- mean(Rall[1, ])   # largest sample size is first row
+Rall <- Rall / norm_const_rt
+```
+
+```{r figure2}
+as_tibble(Rall) -> Rall
+Rall$SampleSize <- x
+
+Rall %>%
+  pivot_longer(cols = -SampleSize, names_to = "simno", values_to = "Rest") %>%
+  ggplot(aes(x = SampleSize, y = Rest)) +
+  geom_point(size = 1.8, colour = "darkblue", alpha = 0.4) +
+  geom_hline(yintercept = 1,   colour = "black") +
+  geom_hline(yintercept = 2,   colour = "darkgrey", linetype = "dashed") +
+  geom_hline(yintercept = 0.5, colour = "darkgrey", linetype = "dashed") +
+  xlab("Sample size") +
+  ylab(expression("Normalised " * R[t])) +
+  theme_bw() +
+  theme(
+    axis.text  = element_text(size = 10),
+    axis.title = element_text(size = 14)
+  ) -> p2
+
+ggsave("Figure2.png", p2, height = H, width = H * goldenratio,
+       dpi = 600, device = "png")
+p2
+
+
+
+```
