@@ -21,33 +21,7 @@ plan(multisession, workers = no_cores)
 
 ```
 
-## Figure 1: Sample sizes in the contact survey literature
 
-Reads a rapid-review dataset, filters to included studies, and plots the
-distribution of sample sizes (capped at 10,000 for display).
-
-```{r figure1}
-reviewdata <- read.csv("../rapidreviewdata_update.csv")
-
-reviewdata %>%
-  filter(INCLUDE. == "YES") %>%
-  group_by(Title, COUNTRY, SAMPLE.SIZE) %>%
-  summarise(count = n(), .groups = "drop") %>%
-  mutate(ss2 = ifelse(SAMPLE.SIZE > 10000, 10000, SAMPLE.SIZE)) %>%
-  ggplot(aes(x = ss2)) +
-  geom_histogram(binwidth = 200, color = "darkblue", fill = "lightblue") +
-  xlab("Sample size") +
-  ylab("Frequency") +
-  theme_bw() +
-  theme(
-    axis.text  = element_text(size = 14),
-    axis.title = element_text(size = 20)
-  ) -> f1
-
-ggsave("Figure1.png", f1, height = H, width = H * goldenratio,
-       dpi = 600, device = "png")
-f1
-```
 
 ## POLYMOD eigenvalue analysis
 
@@ -60,21 +34,22 @@ dominant eigenvalue (a proxy for R0) is as a function of sample size.
 `3874557/2008_Mossong_POLYMOD_contact_common.csv` (Zenodo record 3874557).
 
 ```{r polymod-setup}
+#participantdata <- read.csv(
+#  "../2008_Mossong_POLYMOD_participant_common.csv"
+#)
+#participantextra <- read.csv(
+#  "../2008_Mossong_POLYMOD_participant_extra.csv"
+#)
+#contactdata <- read.csv(
+#  "../2008_Mossong_POLYMOD_contact_common.csv"
+#)
+
 participantdata <- read.csv(
-  "../3874557/2008_Mossong_POLYMOD_participant_common.csv"
+  "../2009_Hens_BELGIUM_participant_common.csv"
 )
-contactdata <- read.csv(
-  "../3874557/2008_Mossong_POLYMOD_contact_common.csv"
-)
+contactdata <- read.csv(  "../2009_Hens_BELGIUM_contact_common.csv")
 
-contactdata %>%
-  group_by(part_id) %>%
-  summarise(numcontacts=n()) %>% mutate(max(numcontacts)) -> degree1
-
-which.max(degree1$numcontacts)
-degree1[which.max(degree1$numcontacts),]
-
-contactdata %>% filter(part_id==7959)
+view(participantdata)
 
 maxsize  <- nrow(participantdata)   # total participants in full dataset
 x        <- c(100, 500, 1000, 1500, 2000, 3000, 4000, 5000)  # sample sizes
