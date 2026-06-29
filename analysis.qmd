@@ -158,6 +158,27 @@ compute_eigenval <- function(ss) {
   round(max(Re(eigen(contactmatrix[1:(L1 - 2), 2:(L1 - 1)])$values)), 3)
 }
 
+
+compute_eigenval_wthreplacement <- function(ss) {
+    ix = data.frame(part_id=sample(participantdata$part_id,size=ss,replace=TRUE))
+    participantdata %>% 
+      right_join(ix,multiple="all",unmatched="drop") %>% #decide whether this participant is included in the sample, could be sampled more than once
+      mutate(agegp1 = ifelse(part_age<=70,floor(part_age/10), floor(70/10))) %>%            #create age categories, in this case 10-year age bands
+      add_count(agegp1) %>%  ##count partipants who are taking part
+      right_join(contactdata %>%
+                   filter(!is.na(cnt_age_exact)),relationship = "many-to-many") %>% 
+      mutate(agegp2 = ifelse(cnt_age_exact<=70,floor(cnt_age_exact/10),floor(70/10))) %>%#create age categories for contacts (make sure same as participant)
+      group_by(agegp1,agegp2) %>%
+      summarise(popsize=max(n),totalcontacts = n(),.groups = "drop_last") %>%
+      mutate(contactrate = totalcontacts/popsize) %>%
+      mutate(contactrate = ifelse(is.na(contactrate),0,contactrate)) %>% 
+      pivot_wider(id_cols=agegp1,names_from=agegp2,values_from = contactrate, values_fill = 0) %>%   #turn into matrix
+      replace_na(list(Value = 0))-> contactmatrix
+
+    L1 <- ncol(contactmatrix)
+    round(max(Re(eigen(contactmatrix[1:(L1 - 1), 2:(L1)])$values)), 3)
+}
+
 # Build a tidy grid of every (sample size × rep) combination and map the
 # function over it. Each row is one independent draw; randomness comes from
 # rbinom inside compute_eigenval, so the rep column is just a counter.
@@ -337,27 +358,35 @@ mult1   <- meanR0 / myweightedmean(cbind(degall$wcon, degall$ageweight), TRUE)
 #| cache: true
 infchild <- 1
 
-PIDs    <- unique(contactsperson$PID)
-#x       <- c(seq(length(PIDs), 100, -100))
-x       <- c(seq(5800, 100, -100))
-numreps <- 200
-Rall    <- matrix(0, nrow = length(x), ncol = numreps)
-i <- 1
-for (ss in x) {
-  for (nr in 1:numreps) {
-    rind <- c()
-    contactsperson$use <- contactsperson$PID * 0
-    mysample <- sample.int(length(PIDs), ss)
-    for (s in mysample) {
-      ix <- which(contactsperson$PID == mysample[s])
-      contactsperson$use[ix] <- 1
-    }
-    degall <- degreeperson0(contactsperson[contactsperson$use == 1, ], infchild, 0.0)
-    rind   <- rbind(rind, cbind(degall$wcon, degall$ageweight))
-    myboot <- myweightedmean(rind)
-    Rall[i, nr] <- mult1 * mean(myboot)
+#faster implementation, and with replacement 
+
+PIDs = unique(contactsperson$PID)
+x=c(seq(5800,100,-100))
+i=1
+numreps = 500
+Rall = matrix(0,nrow=length(x),ncol=numreps)
+
+degall=degreeperson0(contactsperson,infchild,0.0)
+persons_by_pid <- split(degall, degall$PID)
+PIDs <- names(persons_by_pid)
+
+for(ss in x)
+{
+  print(paste("sample size",ss))
+  for(nr in 1:numreps)
+  {
+    sampled <- sample(PIDs, size = ss, replace = TRUE)
+    
+    persons_resamp <- bind_rows(persons_by_pid[sampled], .id = NULL)
+    
+    rind <- cbind(persons_resamp$wcon, persons_resamp$ageweight)
+    
+    myboot=myweightedmean(rind) # estimate of Rpop
+    Rall[i,nr] = mult1*mean(myboot)
+    
   }
-  i <- i + 1
+  
+  i=i+1
 }
 ```
 
@@ -485,3 +514,79 @@ ggsave("Figure2.png", f2, height = H, width = H * goldenratio,
        dpi = 600, device = "png")
 
 ```
+
+
+## Repeat analysis for HK
+```{r}
+participantdata<-read.csv("HK/2017_Leung_HongKong_participant_common.csv")
+contactdata <- read.csv("HK/2017_Leung_HongKong_contact_common.csv")
+
+#sample sizes for simulating:
+x=c(100,500,1000,1500,2000,3000,5000,7000)
+
+#how many repeats for each sample size?
+numreps = 200
+
+#storage for output
+maxeigenval=array(NA,dim=c(length(x),numreps))
+
+i=1
+for(ss in x)
+{
+  print(paste("sample size",ss))
+  for(nr in 1:numreps)
+  {
+    ix = data.frame(part_id=sample(participantdata$part_id,size=ss,replace=TRUE))
+    participantdata %>% 
+      right_join(ix,multiple="all",unmatched="drop") %>% #decide whether this participant is included in the sample, could be sampled more than once
+      mutate(agegp1 = ifelse(part_age<=70,floor(part_age/10), floor(70/10))) %>%            #create age categories, in this case 10-year age bands
+      add_count(agegp1) %>%  ##count partipants who are taking part
+      right_join(contactdata %>%
+                   filter(!is.na(cnt_age_exact)),relationship = "many-to-many") %>% 
+      mutate(agegp2 = ifelse(cnt_age_exact<=70,floor(cnt_age_exact/10),floor(70/10))) %>%#create age categories for contacts (make sure same as participant)
+      group_by(agegp1,agegp2) %>%
+      summarise(popsize=max(n),totalcontacts = n(),.groups = "drop_last") %>%
+      mutate(contactrate = totalcontacts/popsize) %>%
+      mutate(contactrate = ifelse(is.na(contactrate),0,contactrate)) %>% 
+      pivot_wider(id_cols=agegp1,names_from=agegp2,values_from = contactrate, values_fill = 0) %>%   #turn into matrix
+      replace_na(list(Value = 0))-> contactmatrix
+    
+    L1=length(contactmatrix[1,])
+    maxeigenval[i,nr]=round(max(Re(eigen(contactmatrix[1:(L1-1),2:(L1)])$values)),3)           
+    print(paste("max eigenval",maxeigenval[i,nr]))
+  }
+  i=i+1
+}
+
+
+
+matplot(x,maxeigenval,pch=1)
+diffs=abs(maxeigenval[,1] - maxeigenval[,2])
+
+plot(x,diffs/diffs[length(diffs)])
+
+as.data.frame(maxeigenval) -> mymatrix
+rownames(mymatrix)=x
+rowmeans1=rowMeans(mymatrix)
+mymatrix=mymatrix/rowmeans1[length(rowmeans1)]
+
+  mymatrix %>% 
+  tibble::rownames_to_column(var = "ss") %>%
+  pivot_longer(-ss,names_to='rep',values_to="maxeigen") %>%
+  ggplot(aes(x=maxeigen,color=ss)) +
+  geom_density()
+  
+
+  
+  mymatrix %>% 
+    tibble::rownames_to_column(var = "ss") %>%
+    pivot_longer(-ss,names_to='rep',values_to="maxeigen") %>%
+    group_by(ss) %>%
+    summarise(mean(maxeigen),var(maxeigen),-min(maxeigen)+mean(maxeigen),max(maxeigen)-mean(maxeigen))
+
+  
+save(mymatrix,file="HK_withreplacement.RData")  
+
+
+```
+
