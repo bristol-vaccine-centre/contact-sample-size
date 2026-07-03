@@ -440,6 +440,7 @@ contactdata <- read.csv("HK/2017_Leung_HongKong_contact_common.csv")
 
 #sample sizes for simulating:
 xHK=c(seq(100,1000,100))
+xHK2=c(100,200,500,1000)
 #how many repeats for each sample size?
 numreps = 200
 
@@ -477,7 +478,7 @@ maxeigenval_HK %>%
     )-> scatter_HK
 
 maxeigenval_v2 %>%
-  filter(ss%in%x) %>% 
+  filter(ss%in%xHK2) %>% 
   ggplot(aes(x = maxeigen_norm, colour = as.factor(ss))) +
     geom_density() +
     geom_vline(xintercept = 1,   colour = "black") +
