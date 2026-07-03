@@ -111,11 +111,15 @@ maxeigenval_v2 <- crossing(ss = x2, rep = seq_len(numreps)) %>%
   mutate(maxeigen = future_map_dbl(ss, compute_eigenval_withreplacement,
                                    .options = furrr_options(seed = TRUE),
                                    .progress = TRUE))
+
+nconst=compute_eigenval_withreplacement(7000)
 ```
 
 ```{r polymod-normalise}
+
 #norm_const <- mean(maxeigenval[length(x), ])
-norm_const <- as.numeric(maxeigenval_v2 %>% filter(ss==max(ss)) %>% summarise(mean(maxeigen)))
+#norm_const <- as.numeric(maxeigenval_v2 %>% filter(ss==max(ss)) %>% summarise(mean(maxeigen)))
+norm_const <-as.numeric(nconst)
 #maxeigenval <- maxeigenval / norm_const
 maxeigenval_v2 <- maxeigenval_v2 %>% mutate(maxeigen_norm = maxeigen / norm_const)
 ```
@@ -149,7 +153,7 @@ paral
 ## Table Calculate statistics across sample sizes (POLYMOD)
 ```{r polymod-table}
 
-ss5000 <- maxeigenval_v2%>%filter(ss==5000)%>%select(maxeigen_norm) %>% unlist() %>% as.numeric()
+ss5000 <- maxeigenval_v2%>%filter(ss==5800)%>%select(maxeigen_norm) %>% unlist() %>% as.numeric()
 ss100 <- maxeigenval_v2%>%filter(ss==100)%>%select(maxeigen_norm) %>% unlist() %>% as.numeric()
 ks1=ks.test(ss100,ss5000) 
 
@@ -157,7 +161,7 @@ maxeigenval_v2 %>%
   #filter(ss%in%x) %>% 
   group_by(ss) %>%
   summarise(min1=min(maxeigen_norm),max1=max(maxeigen_norm),mean1=mean(maxeigen_norm),sd1=sqrt(var(maxeigen_norm)),
-            ks=ks.test(x=maxeigen_norm,y=ss5000)$statistic) %>% 
+            ks=ks.test(x=maxeigen_norm,y=ss5000)$statistic,pval=ks.test(x=maxeigen_norm,y=ss5000)$p.value) %>% 
   mutate(diff1=lag(sd1) - sd1) %>%
   ungroup() -> POLYMODtable
 
@@ -336,12 +340,17 @@ save(Rall, file = "Rall_revision.Rdata")
 ```{r SCS-table}
 #load(file = "../Rall.Rdata")
 Rall_long %>%
-  filter(SampleSize==5000)%>%select(Rest) %>% unlist() %>% as.numeric() -> R5000
+  filter(SampleSize==5800)%>%select(Rest) %>% unlist() %>% as.numeric() -> R5000
+
+Rall_long %>%
+  filter(SampleSize==1000)%>%select(Rest) %>% unlist() %>% as.numeric() -> R1000
+
+ks1=ks.test(x=R1000,y=R5000)
 
 Rall_long %>%
   group_by(SampleSize) %>%
   summarise(min1=min(Rest,na.rm=T),max1=max(Rest,na.rm=T),mean1=mean(Rest,na.rm=T),sd1=sqrt(var(Rest,na.rm=T)),
-            ks=ks.test(x=Rest,y=R5000)$statistic) %>% 
+            ks=ks.test(x=Rest,y=R5000)$statistic,pval=ks.test(x=Rest,y=R5000)$p.value) %>% 
   mutate(diff1=lag(sd1) - sd1) %>%
   ungroup() -> SCStable
 
@@ -373,7 +382,7 @@ library(knitr)
 library(pander)
 head(SCStable)
 head(POLYMODtable)
-xtable=c(200,500,1000,1100,1200,1300,1400,1500,2000,3000,4000,5000)
+xtable=c(200,500,1000,1200,1400,1600,1800,2000,3000,4000,5000)
 
 SCStable %>%
   left_join(POLYMODtable,by=join_by(SampleSize==ss)) %>%
@@ -499,6 +508,7 @@ scatter_HK + density_plot_HK + plot_layout(axis_titles = "collect_y") -> HK_fig2
 
 
 HK_fig2
-
+ggsave("HK_withreplacement.png", HK_fig2, height = H, width = H * goldenratio,
+       dpi = 600, device = "png")
 ```
 
