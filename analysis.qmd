@@ -112,14 +112,14 @@ maxeigenval_v2 <- crossing(ss = x2, rep = seq_len(numreps)) %>%
                                    .options = furrr_options(seed = TRUE),
                                    .progress = TRUE))
 
-nconst=compute_eigenval_withreplacement(7000)
+#nconst=compute_eigenval_withreplacement(7000)
 ```
 
 ```{r polymod-normalise}
 
 #norm_const <- mean(maxeigenval[length(x), ])
-#norm_const <- as.numeric(maxeigenval_v2 %>% filter(ss==max(ss)) %>% summarise(mean(maxeigen)))
-norm_const <-as.numeric(nconst)
+norm_const <- as.numeric(maxeigenval_v2 %>% filter(ss==max(ss)) %>% summarise(mean(maxeigen)))
+#norm_const <-as.numeric(nconst)
 #maxeigenval <- maxeigenval / norm_const
 maxeigenval_v2 <- maxeigenval_v2 %>% mutate(maxeigen_norm = maxeigen / norm_const)
 ```
@@ -140,7 +140,7 @@ maxeigenval_v2 %>%
     geom_hline(yintercept = 2,   colour = "darkgrey", linetype = "dashed") +
     geom_hline(yintercept = 0.5, colour = "darkgrey", linetype = "dashed") +
     xlab("Sample size") +
-    ylab("Normalised dominant eigenvalue") +
+    ylab(expression("Normalised " * R)) + 
     theme_bw() +
     theme(
       axis.text  = element_text(size = 10),
@@ -423,7 +423,7 @@ Rall_long %>%
   ggplot(aes(y = Rest, colour = as.factor(SampleSize))) +
     geom_density() +
     xlab("Density") +
-    ylab(expression("Normalised " * R[t])) +
+    ylab(expression("Normalised " * R)) +
     labs(colour = "Sample size") +
     theme_bw() +
     theme(

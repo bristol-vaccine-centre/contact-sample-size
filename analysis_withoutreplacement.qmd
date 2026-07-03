@@ -428,7 +428,7 @@ polymod / SCS + plot_annotation(tag_levels = "A")-> f2
 
 f2 
 
-ggsave("Figure2_revision.png", f2, height = H, width = H * goldenratio,
+ggsave("Figure2_without_replacement_revision.png", f2, height = H, width = H * goldenratio,
        dpi = 600, device = "png")
 
 ```

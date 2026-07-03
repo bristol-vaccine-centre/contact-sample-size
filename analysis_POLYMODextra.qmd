@@ -9,6 +9,7 @@ library(tidyverse)
 library(boot)
 library(furrr)
 library(patchwork)
+setwd("/Users/eb15081/Library/CloudStorage/OneDrive-UniversityofBristol/projects2022/samplesize/Rfiles/contact-sample-size/")
 
 # Figure dimension constants (golden ratio proportions)
 H <- 8
@@ -23,440 +24,457 @@ plan(multisession, workers = no_cores)
 
 
 
-## POLYMOD eigenvalue analysis
+## POLYMOD sensitivity to age bands 
 
 Sub-samples the POLYMOD dataset at a range of sample sizes, constructs a
 contact matrix with 10-year age bands, and extracts the dominant eigenvalue
 of each sampled matrix. Repeating this many times shows how stable the
 dominant eigenvalue (a proxy for R0) is as a function of sample size.
 
-**Data required:** `3874557/2008_Mossong_POLYMOD_participant_common.csv` and
-`3874557/2008_Mossong_POLYMOD_contact_common.csv` (Zenodo record 3874557).
 
 ```{r polymod-setup}
-#participantdata <- read.csv(
-#  "../2008_Mossong_POLYMOD_participant_common.csv"
-#)
-#participantextra <- read.csv(
-#  "../2008_Mossong_POLYMOD_participant_extra.csv"
-#)
-#contactdata <- read.csv(
-#  "../2008_Mossong_POLYMOD_contact_common.csv"
-#)
-
 participantdata <- read.csv(
-  "../2009_Hens_BELGIUM_participant_common.csv"
+  "../3874557/2008_Mossong_POLYMOD_participant_common.csv"
 )
-contactdata <- read.csv(  "../2009_Hens_BELGIUM_contact_common.csv")
+contactdata <- read.csv(
+  "../3874557/2008_Mossong_POLYMOD_contact_common.csv"
+)
 
-view(participantdata)
 
 maxsize  <- nrow(participantdata)   # total participants in full dataset
 x        <- c(100, 500, 1000, 1500, 2000, 3000, 4000, 5000)  # sample sizes
 x2       <- seq(100, 5800, 100)
 numreps  <- 200                     # repetitions per sample size
 
-maxeigenval <- array(NA, dim = c(length(x), numreps))
 ```
 
-```{r polymod-simulation}
-#| cache: true   # simulation is slow; cache to avoid re-running on re-render
 
-for (i in seq_along(x)) {
-  ss <- x[i]
-  for (nr in 1:numreps) {
-
-    # Randomly include each participant with probability ss/maxsize,
-    # assign 10-year age bands (capped at 70+), join to contacts,
-    # compute per-participant contact rates, and reshape to a matrix.
-    participantdata %>%
-      rowwise() %>%
-      mutate(
-        include = rbinom(1, 1, prob = ss / maxsize),
-        agegp1  = ifelse(part_age <= 70, floor(part_age / 10), floor(70 / 10))
-      ) %>%
-      add_count(agegp1, wt = include) %>%
-      right_join(contactdata %>% filter(!is.na(cnt_age_exact)),
-                 by = "part_id") %>%
-      filter(include == 1) %>%
-      mutate(
-        agegp2 = ifelse(cnt_age_exact <= 70,
-                        floor(cnt_age_exact / 10), floor(70 / 10))
-      ) %>%
-      group_by(agegp1, agegp2, n) %>%
-      summarise(totalcontacts = n(), .groups = "drop_last") %>%
-      mutate(contactrate = totalcontacts / n,
-             contactrate = ifelse(is.na(contactrate), 0, contactrate)) %>%
-      pivot_wider(id_cols = agegp1, names_from = agegp2,
-                  values_from = contactrate, values_fill = 0) %>%
-      replace_na(list(Value = 0)) -> contactmatrix
-
-    # Dominant eigenvalue of the contact matrix, excluding the oldest age group
-    L1 <- ncol(contactmatrix)
-    maxeigenval[i, nr] <- round(
-      max(Re(eigen(contactmatrix[1:(L1 - 2), 2:(L1 - 1)])$values)), 3
-    )
-  }
-}
-```
-
-```{r polymod-simulation-v2}
+```{r polymod-simulation-10y}
 #| cache: true   # simulation is slow; cache to avoid re-running on re-render
 
 # Extract the per-draw computation into a plain function.
 # Takes a sample size ss, runs the full sub-sampling pipeline once,
 # and returns the scalar dominant eigenvalue of the contact matrix.
-compute_eigenval <- function(ss) {
-  participantdata %>%
-    rowwise() %>%
-    mutate(
-      include = rbinom(1, 1, prob = ss / maxsize),
-      agegp1  = ifelse(part_age <= 70, floor(part_age / 10), floor(70 / 10))
-    ) %>%
-    add_count(agegp1, wt = include) %>%
-    right_join(contactdata %>% filter(!is.na(cnt_age_exact)),
-               by = "part_id") %>%
-    filter(include == 1) %>%
-    mutate(
-      agegp2 = ifelse(cnt_age_exact <= 70,
-                      floor(cnt_age_exact / 10), floor(70 / 10))
-    ) %>%
-    group_by(agegp1, agegp2, n) %>%
-    summarise(totalcontacts = n(), .groups = "drop_last") %>%
-    mutate(contactrate = totalcontacts / n,
-           contactrate = ifelse(is.na(contactrate), 0, contactrate)) %>%
-    pivot_wider(id_cols = agegp1, names_from = agegp2,
-                values_from = contactrate, values_fill = 0) %>%
-    replace_na(list(Value = 0)) -> contactmatrix
 
-  L1 <- ncol(contactmatrix)
-  round(max(Re(eigen(contactmatrix[1:(L1 - 2), 2:(L1 - 1)])$values)), 3)
+agebandsize=10
+
+compute_eigenval_withreplacement <- function(ss) {
+    ix = data.frame(part_id=sample(participantdata$part_id,size=ss,replace=TRUE))
+    participantdata %>% 
+      right_join(ix,multiple="all",unmatched="drop",by = join_by(part_id)) %>% #decide whether this participant is included in the sample, could be sampled more than once
+      mutate(agegp1 = ifelse(part_age<=70,floor(part_age/agebandsize), floor(70/agebandsize))) %>%            #create age categories, in this case 10-year age bands
+      add_count(agegp1) %>%  ##count partipants who are taking part
+      right_join(contactdata %>%
+                   filter(!is.na(cnt_age_exact)),relationship = "many-to-many",by = join_by(part_id)) %>% 
+      mutate(agegp2 = ifelse(cnt_age_exact<=agebandsize,floor(cnt_age_exact/agebandsize),floor(70/agebandsize))) %>%#create age categories for contacts (make sure same as participant)
+      group_by(agegp1,agegp2) %>%
+      summarise(popsize=max(n),totalcontacts = n(),.groups = "drop_last") %>%
+      mutate(contactrate = totalcontacts/popsize) %>%
+      mutate(contactrate = ifelse(is.na(contactrate),0,contactrate)) %>% 
+      pivot_wider(id_cols=agegp1,names_from=agegp2,values_from = contactrate, values_fill = 0) %>%   #turn into matrix
+      replace_na(list(Value = 0))-> contactmatrix
+
+    L1 <- ncol(contactmatrix)
+    round(max(Re(eigen(contactmatrix[1:(L1 - 1), 2:(L1)])$values)), 3)
 }
+
+
 
 # Build a tidy grid of every (sample size × rep) combination and map the
 # function over it. Each row is one independent draw; randomness comes from
 # rbinom inside compute_eigenval, so the rep column is just a counter.
 maxeigenval_v2 <- crossing(ss = x2, rep = seq_len(numreps)) %>%
-  mutate(maxeigen = future_map_dbl(ss, compute_eigenval,
+  mutate(maxeigen = future_map_dbl(ss, compute_eigenval_withreplacement,
                                    .options = furrr_options(seed = TRUE),
                                    .progress = TRUE))
+
+#nconst=compute_eigenval_withreplacement(7000)
 ```
 
+
 ```{r polymod-normalise}
-norm_const <- mean(maxeigenval[length(x), ])
-maxeigenval <- maxeigenval / norm_const
-maxeigenval_v2 <- maxeigenval_v2 %>% mutate(maxeigen = maxeigen / norm_const)
+
+#norm_const <- mean(maxeigenval[length(x), ])
+norm_const <- as.numeric(maxeigenval_v2 %>% filter(ss==max(ss)) %>% summarise(mean(maxeigen)))
+#norm_const <-as.numeric(nconst)
+#maxeigenval <- maxeigenval / norm_const
+maxeigenval_v2 <- maxeigenval_v2 %>% mutate(maxeigen_norm = maxeigen / norm_const)
 ```
 
 ```{r savepolymodout}
-save(maxeigenval,file="maxeigenval.RData")
-save(maxeigenval_v2,file="maxeigenval_v2.RData") 
+#save(maxeigenval,file="maxeigenval.RData")
+save(maxeigenval_v2,file="maxeigenval10_revision.RData") 
 ```
 
 
 ```{r polymod-scatter}
 # Scatter of normalised dominant eigenvalues across all reps, by sample size
-as.data.frame(maxeigenval) %>%
-  mutate(SampleSize = x) %>%
-  pivot_longer(-SampleSize, names_to = "rep", values_to = "maxeigen") %>% 
-    ggplot(aes(x = SampleSize, y = maxeigen)) +
-    geom_point(size = 1.2, colour = "darkblue", alpha = 0.3) +
-    xlab("Sample size") +
-    ylab("Normalised dominant eigenvalue") +
-    theme_bw() +
-    theme(
-      axis.text  = element_text(size = 10),
-      axis.title = element_text(size = 14)
-    ) -> original
 
 maxeigenval_v2 %>%
-  ggplot(aes(x = ss, y = maxeigen)) +
+  ggplot(aes(x = ss, y = maxeigen_norm)) +
     geom_point(size = 1.2, alpha = 0.3, colour = 'darkblue') +
     geom_hline(yintercept = 1,   colour = "black") +
     geom_hline(yintercept = 2,   colour = "darkgrey", linetype = "dashed") +
     geom_hline(yintercept = 0.5, colour = "darkgrey", linetype = "dashed") +
     xlab("Sample size") +
-    ylab("Normalised dominant eigenvalue") +
+    ylab(expression("Normalised " * R)) + 
     theme_bw() +
     theme(
       axis.text  = element_text(size = 10),
       axis.title = element_text(size = 14)
-    ) -> paral
+    )-> paral10
 
-paral
+paral10
+
+ggsave("PM10.png", paral10, height = H, width = H * goldenratio,
+       dpi = 600, device = "png")
 ```
 
-## Table Calculate statistics across sample sizes (POLYMOD)
-```{r polymod-table}
 
-ss5000 <- maxeigenval_v2%>%filter(ss==5000)%>%select(maxeigen) %>% unlist() %>% as.numeric()
-ss100 <- maxeigenval_v2%>%filter(ss==100)%>%select(maxeigen) %>% unlist() %>% as.numeric()
-ks1=ks.test(ss100,ss5000) 
 
-maxeigenval_v2 %>%
-  #filter(ss%in%x) %>% 
-  group_by(ss) %>%
-  summarise(min1=min(maxeigen),max1=max(maxeigen),mean1=mean(maxeigen),sd1=sqrt(var(maxeigen)),
-            ks=ks.test(x=maxeigen,y=ss5000)$statistic) %>% 
-  mutate(diff1=lag(sd1) - sd1) %>%
-  ungroup() -> POLYMODtable
+```{r polymod-simulation-5y}
+#| cache: true   # simulation is slow; cache to avoid re-running on re-render
 
-maxeigenval_v2 %>%
-  #filter(ss%in%x) %>% 
-  group_by(ss) %>%
-  summarise(min1=min(maxeigen),max1=max(maxeigen),mean1=mean(maxeigen),sd1=sqrt(var(maxeigen)),
-            ks=ks.test(x=maxeigen,y=ss5000)$statistic) %>% 
-  mutate(diff1=lag(sd1) - sd1) %>%
-  ungroup() %>%
-  ggplot(aes(x=ss,y=diff1)) +
-  geom_point() +
-  ylab("Difference in Standard Deviation") +
-  xlab("Sample size")
+# Extract the per-draw computation into a plain function.
+# Takes a sample size ss, runs the full sub-sampling pipeline once,
+# and returns the scalar dominant eigenvalue of the contact matrix.
 
-maxeigenval_v2 %>%
-  #filter(ss%in%x) %>% 
-  group_by(ss) %>%
-  summarise(min1=min(maxeigen),max1=max(maxeigen),mean1=mean(maxeigen),sd1=sqrt(var(maxeigen)),
-            ks=ks.test(x=maxeigen,y=ss5000)$statistic) %>% 
-  mutate(diff1=lag(sd1) - sd1) %>%
-  ungroup() %>%
-  ggplot(aes(x=ss,y=ks)) +
-  geom_point() +
-  ylab("KS statistic") +
-  xlab("Sample size")
+agebandsize=5
 
+compute_eigenval_withreplacement <- function(ss) {
+    ix = data.frame(part_id=sample(participantdata$part_id,size=ss,replace=TRUE))
+    participantdata %>% 
+      right_join(ix,multiple="all",unmatched="drop",by = join_by(part_id)) %>% #decide whether this participant is included in the sample, could be sampled more than once
+      mutate(agegp1 = ifelse(part_age<=70,floor(part_age/agebandsize), floor(70/agebandsize))) %>%            #create age categories, in this case 10-year age bands
+      add_count(agegp1) %>%  ##count partipants who are taking part
+      right_join(contactdata %>%
+                   filter(!is.na(cnt_age_exact)),relationship = "many-to-many",by = join_by(part_id)) %>% 
+      mutate(agegp2 = ifelse(cnt_age_exact<=agebandsize,floor(cnt_age_exact/agebandsize),floor(70/agebandsize))) %>%#create age categories for contacts (make sure same as participant)
+      group_by(agegp1,agegp2) %>%
+      summarise(popsize=max(n),totalcontacts = n(),.groups = "drop_last") %>%
+      mutate(contactrate = totalcontacts/popsize) %>%
+      mutate(contactrate = ifelse(is.na(contactrate),0,contactrate)) %>% 
+      pivot_wider(id_cols=agegp1,names_from=agegp2,values_from = contactrate, values_fill = 0) %>%   #turn into matrix
+      replace_na(list(Value = 0))-> contactmatrix
+
+    L1 <- ncol(contactmatrix)
+    round(max(Re(eigen(contactmatrix[1:(L1 - 1), 2:(L1)])$values)), 3)
+}
+
+# Build a tidy grid of every (sample size × rep) combination and map the
+# function over it. Each row is one independent draw; randomness comes from
+# rbinom inside compute_eigenval, so the rep column is just a counter.
+maxeigenval_5y <- crossing(ss = x2, rep = seq_len(numreps)) %>%
+  mutate(maxeigen = future_map_dbl(ss, compute_eigenval_withreplacement,
+                                   .options = furrr_options(seed = TRUE),
+                                   .progress = TRUE))
+
+#nconst=compute_eigenval_withreplacement(7000)
 ```
 
-## Figure 2ab: MaxEigen estimates across sample sizes (POLYMOD)
 
-```{r polymod-density}
-# Density plot: tighter distributions at larger sample sizes indicate convergence
-maxeigenval_v2 %>%
-  filter(ss%in%x) %>% 
-  ggplot(aes(x = maxeigen, colour = as.factor(ss))) +
-    geom_density() +
-    geom_vline(xintercept = 1,   colour = "black") +
-    geom_vline(xintercept = 2,   colour = "darkgrey", linetype = "dashed") +
-    geom_vline(xintercept = 0.5, colour = "darkgrey", linetype = "dashed") +
-    xlab("Normalised dominant eigenvalue") +
-    ylab("Density") +
-    labs(colour = "Sample size") +
+```{r}
+
+#norm_const <- mean(maxeigenval[length(x), ])
+norm_const <- as.numeric(maxeigenval_5y %>% filter(ss==max(ss)) %>% summarise(mean(maxeigen)))
+#norm_const <-as.numeric(nconst)
+#maxeigenval <- maxeigenval / norm_const
+maxeigenval_5y <- maxeigenval_5y %>% mutate(maxeigen_norm = maxeigen / norm_const)
+```
+
+```{r}
+#save(maxeigenval,file="maxeigenval.RData")
+save(maxeigenval_5y,file="maxeigenval_5y.RData") 
+```
+
+
+```{r}
+# Scatter of normalised dominant eigenvalues across all reps, by sample size
+
+maxeigenval_5y %>%
+  ggplot(aes(x = ss, y = maxeigen_norm)) +
+    geom_point(size = 1.2, alpha = 0.3, colour = 'darkblue') +
+    geom_hline(yintercept = 1,   colour = "black") +
+    geom_hline(yintercept = 2,   colour = "darkgrey", linetype = "dashed") +
+    geom_hline(yintercept = 0.5, colour = "darkgrey", linetype = "dashed") +
+    xlab("Sample size") +
+    ylab(expression("Normalised " * R)) + 
     theme_bw() +
     theme(
       axis.text  = element_text(size = 10),
       axis.title = element_text(size = 14)
-    ) +
-    coord_flip() -> density_plot
-density_plot
+    )-> paral5
 
-paral + density_plot + plot_layout(axis_titles = "collect_y") -> polymod
+paral5
 
-
+ggsave("PM5.png", paral5, height = H, width = H * goldenratio,
+       dpi = 600, device = "png")
 ```
 
-## Figure 2b: R_t estimates across sample sizes (Social Contact Survey)
 
-Uses a pre-processed contact dataset to estimate the effective reproduction
-number at varying sample sizes. The weighted mean of squared contacts
-(weighted by age-group size) is used as the key statistic.
 
-**Data required:** `contactsperson_withkids6.Rdata` 
-(pre-computed simulation output).
+```{r polymod-simulation-1y}
+#| cache: true   # simulation is slow; cache to avoid re-running on re-render
 
-```{r rt-setup}
-load(file="contactsperson_withkids6.Rdata")
-# Weighted mean helper: sum(degree^2 * weight) / sum(weight)
-myweightedmean <- function(DD, ix) {
-  sum(DD[ix, 1]^2 * DD[ix, 2]) / sum(DD[ix, 2])
+# Extract the per-draw computation into a plain function.
+# Takes a sample size ss, runs the full sub-sampling pipeline once,
+# and returns the scalar dominant eigenvalue of the contact matrix.
+
+agebandsize=1
+
+compute_eigenval_withreplacement <- function(ss) {
+    ix = data.frame(part_id=sample(participantdata$part_id,size=ss,replace=TRUE))
+    participantdata %>% 
+      right_join(ix,multiple="all",unmatched="drop",by = join_by(part_id)) %>% #decide whether this participant is included in the sample, could be sampled more than once
+      mutate(agegp1 = ifelse(part_age<=70,floor(part_age/agebandsize), floor(70/agebandsize))) %>%            #create age categories, in this case 10-year age bands
+      add_count(agegp1) %>%  ##count partipants who are taking part
+      right_join(contactdata %>%
+                   filter(!is.na(cnt_age_exact)),relationship = "many-to-many",by = join_by(part_id)) %>% 
+      mutate(agegp2 = ifelse(cnt_age_exact<=agebandsize,floor(cnt_age_exact/agebandsize),floor(70/agebandsize))) %>%#create age categories for contacts (make sure same as participant)
+      group_by(agegp1,agegp2) %>%
+      summarise(popsize=max(n),totalcontacts = n(),.groups = "drop_last") %>%
+      mutate(contactrate = totalcontacts/popsize) %>%
+      mutate(contactrate = ifelse(is.na(contactrate),0,contactrate)) %>% 
+      pivot_wider(id_cols=agegp1,names_from=agegp2,values_from = contactrate, values_fill = 0) %>%   #turn into matrix
+      replace_na(list(Value = 0))-> contactmatrix
+
+    L1 <- ncol(contactmatrix)
+    round(max(Re(eigen(contactmatrix[1:(L1 - 1), 2:(L1)])$values)), 3)
 }
 
-# Compute per-person effective degree (number of potentially infectious contacts)
-degreeperson0 <- function(contactsperson, inf_child, CTF1) {
-  contactsperson %>%
-    filter(dcat >= 0) %>%
-    mutate(
-      infect  = ifelse(age <= 11, inf_child, 1),
-      Num1    = ifelse(contacttrace == TRUE,
-                       ((1 - CTF1) * Numbers) * (1 - comply) * infect,
-                       Numbers * (1 - comply) * infect),
-      homenum  = Num1 * Home,
-      worknum  = Num1 * WorkSchool,
-      othernum = Num1 * OtherLeisure + Num1 * Travel
-    ) %>%
-    group_by(PID) %>%
-    summarise(
-      degree  = sum(homenum) + sum(worknum) + sum(othernum),
-      totdcat = sum(dcat),
-      wcon    = sum(homenum * dcat2) + sum(worknum * dcat2) +
-                sum(othernum * dcat2),
-      age       = mean(age),
-      ageweight = mean(ageweight),
-      .groups   = "drop"
-    )
-}
-```
+# Build a tidy grid of every (sample size × rep) combination and map the
+# function over it. Each row is one independent draw; randomness comes from
+# rbinom inside compute_eigenval, so the rep column is just a counter.
+maxeigenval_1y <- crossing(ss = x2, rep = seq_len(numreps)) %>%
+  mutate(maxeigen = future_map_dbl(ss, compute_eigenval_withreplacement,
+                                   .options = furrr_options(seed = TRUE),
+                                   .progress = TRUE))
 
-```{r rt-calibrate}
-
-# Set compliance and contact tracing to zero (baseline, no interventions)
-contactsperson$comply       <- 0 * contactsperson$age
-contactsperson$contacttrace <- rep(FALSE, nrow(contactsperson))
-
-# Calibrate multiplier so that weighted mean degree gives meanR0 = 2.8
-degall  <- degreeperson0(contactsperson, inf_child = 1, CTF1 = 0)
-meanR0  <- 2.8
-mult1   <- meanR0 / myweightedmean(cbind(degall$wcon, degall$ageweight), TRUE)
-```
-
-```{r rt-simulation}
-#| cache: true
-infchild <- 1
-
-PIDs    <- unique(contactsperson$PID)
-#x       <- c(seq(length(PIDs), 100, -100))
-x       <- c(seq(5800, 100, -100))
-numreps <- 200
-Rall    <- matrix(0, nrow = length(x), ncol = numreps)
-i <- 1
-for (ss in x) {
-  for (nr in 1:numreps) {
-    rind <- c()
-    contactsperson$use <- contactsperson$PID * 0
-    mysample <- sample.int(length(PIDs), ss)
-    for (s in mysample) {
-      ix <- which(contactsperson$PID == mysample[s])
-      contactsperson$use[ix] <- 1
-    }
-    degall <- degreeperson0(contactsperson[contactsperson$use == 1, ], infchild, 0.0)
-    rind   <- rbind(rind, cbind(degall$wcon, degall$ageweight))
-    myboot <- myweightedmean(rind)
-    Rall[i, nr] <- mult1 * mean(myboot)
-  }
-  i <- i + 1
-}
-```
-
-```{r rt-normalise}
-norm_const_rt <- mean(Rall[1, ])   # largest sample size is first row
-Rall <- Rall / norm_const_rt
-as_tibble(Rall) -> Rall
-Rall$SampleSize <- x
-
-save(Rall, file = "Rall.Rdata")
-
-head(Rall)
-
-dim(Rall)
-
+#nconst=compute_eigenval_withreplacement(7000)
 ```
 
 
-## Table Calculate statistics across sample sizes (SCS)
-```{r SCS-table}
-#load(file = "../Rall.Rdata")
-#head(Rall)
-Rall %>%
-  pivot_longer(cols = -SampleSize, names_to = "simno", values_to = "Rest") %>% 
-  filter(SampleSize==5000)%>%select(Rest) %>% unlist() %>% as.numeric() -> R5000
+```{r}
 
-ks1=ks.test(ss100,ss5000) 
-
-Rall %>%
-  pivot_longer(cols = -SampleSize, names_to = "simno", values_to = "Rest") %>% 
-  group_by(SampleSize) %>%
-  summarise(min1=min(Rest,na.rm=T),max1=max(Rest,na.rm=T),mean1=mean(Rest,na.rm=T),sd1=sqrt(var(Rest,na.rm=T)),
-            ks=ks.test(x=Rest,y=R5000)$statistic) %>% 
-  mutate(diff1=lag(sd1) - sd1) %>%
-  ungroup() -> SCStable
-
-Rall %>%
-  pivot_longer(cols = -SampleSize, names_to = "simno", values_to = "Rest") %>% 
-  group_by(SampleSize) %>%
-  summarise(min1=min(Rest,na.rm=T),max1=max(Rest,na.rm=T),mean1=mean(Rest,na.rm=T),sd1=sqrt(var(Rest,na.rm=T)),
-            ks=ks.test(x=Rest,y=R5000)$statistic) %>% 
-  mutate(diff1=lag(sd1) - sd1) %>%
-  ungroup() %>%
-  ggplot(aes(x=SampleSize,y=diff1)) +
-  geom_point() +
-  ylab("Difference in Standard Deviation") +
-  xlab("Sample size")
-
-Rall %>%
-  pivot_longer(cols = -SampleSize, names_to = "simno", values_to = "Rest") %>% 
-  group_by(SampleSize) %>%
-  summarise(min1=min(Rest),max1=max(Rest),mean1=mean(Rest),sd1=sqrt(var(Rest)),
-            ks=ks.test(x=Rest,y=R5000)$statistic) %>% 
-  mutate(diff1=lag(sd1) - sd1) %>%
-  ungroup() %>%
-  ggplot(aes(x=SampleSize,y=ks)) +
-  geom_point() +
-  ylab("KS statistic") +
-  xlab("Sample size") ->KSplot
-
+#norm_const <- mean(maxeigenval[length(x), ])
+norm_const <- as.numeric(maxeigenval_1y %>% filter(ss==max(ss)) %>% summarise(mean(maxeigen)))
+#norm_const <-as.numeric(nconst)
+#maxeigenval <- maxeigenval / norm_const
+maxeigenval_1y <- maxeigenval_1y %>% mutate(maxeigen_norm = maxeigen / norm_const)
 ```
-```{r create-table}
-library(knitr)
-library(pander)
-head(SCStable)
-head(POLYMODtable)
-xtable=c(200,500,1000,1100,1200,1300,1400,1500,2000,3000,4000,5000)
 
-SCStable %>%
-  left_join(POLYMODtable,by=join_by(SampleSize==ss)) %>%
-  filter(SampleSize %in% xtable) -> tableout
-
-kable(tableout)
-
-pander(tableout)
-
-write.csv(tableout,file="table.csv")
+```{r}
+#save(maxeigenval,file="maxeigenval.RData")
+save(maxeigenval_1y,file="maxeigenval_1y.RData") 
 ```
 
 
+```{r}
+# Scatter of normalised dominant eigenvalues across all reps, by sample size
 
-```{r figure2cd}
-# Sample sizes run from the full dataset size down to 200 in steps of 100.
-
-#load("Rall.Rdata")
-
-Rall %>%
-  pivot_longer(cols = -SampleSize, names_to = "simno", values_to = "Rest") %>%
-  ggplot(aes(x = SampleSize, y = Rest)) +
-  geom_point(size = 1.8, colour = "darkblue", alpha = 0.4) +
-#  geom_hline(yintercept = 1,   colour = "black") +
-#  geom_hline(yintercept = 2,   colour = "darkgrey", linetype = "dashed") +
-#  geom_hline(yintercept = 0.5, colour = "darkgrey", linetype = "dashed") +
-  xlab("Sample size") +
-  ylab(expression("Normalised " * R[t])) +
-  theme_bw() +
-  theme(
-    axis.text  = element_text(size = 10),
-    axis.title = element_text(size = 14)
-  ) -> p2
-
-
-
-Rall %>%
-  filter(SampleSize %in% x) %>%
-  pivot_longer(cols = -SampleSize, names_to = "simno", values_to = "Rest") %>%
-  ggplot(aes(y = Rest, colour = as.factor(SampleSize))) +
-    geom_density() +
-    xlab("Density") +
-    ylab(expression("Normalised " * R[t])) +
-    labs(colour = "Sample size") +
+maxeigenval_1y %>%
+  ggplot(aes(x = ss, y = maxeigen_norm)) +
+    geom_point(size = 1.2, alpha = 0.3, colour = 'darkblue') +
+    geom_hline(yintercept = 1,   colour = "black") +
+    geom_hline(yintercept = 2,   colour = "darkgrey", linetype = "dashed") +
+    geom_hline(yintercept = 0.5, colour = "darkgrey", linetype = "dashed") +
+    xlab("Sample size") +
+    ylab(expression("Normalised " * R)) + 
     theme_bw() +
     theme(
       axis.text  = element_text(size = 10),
       axis.title = element_text(size = 14)
-    ) -> density_plot2
+    )-> paral1
 
-p2 + density_plot2 + plot_layout(axes = "collect_y") & ylim(0,4)-> SCS
+paral1
 
-polymod / SCS + plot_annotation(tag_levels = "A")-> f2
+ggsave("PM1.png", paral1, height = H, width = H * goldenratio,
+       dpi = 600, device = "png")
+```
 
-f2 
 
-ggsave("Figure2.png", f2, height = H, width = H * goldenratio,
+
+
+```{r polymod-simulation-20y}
+#| cache: true   # simulation is slow; cache to avoid re-running on re-render
+
+# Extract the per-draw computation into a plain function.
+# Takes a sample size ss, runs the full sub-sampling pipeline once,
+# and returns the scalar dominant eigenvalue of the contact matrix.
+
+agebandsize=20
+
+compute_eigenval_withreplacement <- function(ss) {
+    ix = data.frame(part_id=sample(participantdata$part_id,size=ss,replace=TRUE))
+    participantdata %>% 
+      right_join(ix,multiple="all",unmatched="drop",by = join_by(part_id)) %>% #decide whether this participant is included in the sample, could be sampled more than once
+      mutate(agegp1 = ifelse(part_age<=70,floor(part_age/agebandsize), floor(70/agebandsize))) %>%            #create age categories, in this case 10-year age bands
+      add_count(agegp1) %>%  ##count partipants who are taking part
+      right_join(contactdata %>%
+                   filter(!is.na(cnt_age_exact)),relationship = "many-to-many",by = join_by(part_id)) %>% 
+      mutate(agegp2 = ifelse(cnt_age_exact<=agebandsize,floor(cnt_age_exact/agebandsize),floor(70/agebandsize))) %>%#create age categories for contacts (make sure same as participant)
+      group_by(agegp1,agegp2) %>%
+      summarise(popsize=max(n),totalcontacts = n(),.groups = "drop_last") %>%
+      mutate(contactrate = totalcontacts/popsize) %>%
+      mutate(contactrate = ifelse(is.na(contactrate),0,contactrate)) %>% 
+      pivot_wider(id_cols=agegp1,names_from=agegp2,values_from = contactrate, values_fill = 0) %>%   #turn into matrix
+      replace_na(list(Value = 0))-> contactmatrix
+
+    L1 <- ncol(contactmatrix)
+    round(max(Re(eigen(contactmatrix[1:(L1 - 1), 2:(L1)])$values)), 3)
+}
+
+# Build a tidy grid of every (sample size × rep) combination and map the
+# function over it. Each row is one independent draw; randomness comes from
+# rbinom inside compute_eigenval, so the rep column is just a counter.
+maxeigenval_20y <- crossing(ss = x2, rep = seq_len(numreps)) %>%
+  mutate(maxeigen = future_map_dbl(ss, compute_eigenval_withreplacement,
+                                   .options = furrr_options(seed = TRUE),
+                                   .progress = TRUE))
+
+#nconst=compute_eigenval_withreplacement(7000)
+```
+
+
+```{r}
+
+#norm_const <- mean(maxeigenval[length(x), ])
+norm_const <- as.numeric(maxeigenval_20y %>% filter(ss==max(ss)) %>% summarise(mean(maxeigen)))
+#norm_const <-as.numeric(nconst)
+#maxeigenval <- maxeigenval / norm_const
+maxeigenval_20y <- maxeigenval_20y %>% mutate(maxeigen_norm = maxeigen / norm_const)
+```
+
+```{r}
+#save(maxeigenval,file="maxeigenval.RData")
+save(maxeigenval_20y,file="maxeigenval_20y.RData") 
+```
+
+
+```{r}
+# Scatter of normalised dominant eigenvalues across all reps, by sample size
+
+maxeigenval_20y %>%
+  ggplot(aes(x = ss, y = maxeigen_norm)) +
+    geom_point(size = 1.2, alpha = 0.3, colour = 'darkblue') +
+    geom_hline(yintercept = 1,   colour = "black") +
+    geom_hline(yintercept = 2,   colour = "darkgrey", linetype = "dashed") +
+    geom_hline(yintercept = 0.5, colour = "darkgrey", linetype = "dashed") +
+    xlab("Sample size") +
+    ylab(expression("Normalised " * R)) + 
+    theme_bw() +
+    theme(
+      axis.text  = element_text(size = 10),
+      axis.title = element_text(size = 14)
+    )-> paral20
+
+paral20
+
+ggsave("PM20.png", paral20, height = H, width = H * goldenratio,
+       dpi = 600, device = "png")
+```
+
+
+
+```{r}
+theme_big <- theme(
+  text = element_text(size = 16),
+  axis.title = element_text(size = 16),
+  axis.text = element_text(size = 14),
+  strip.text = element_text(size = 16),
+  legend.title = element_text(size = 16),
+  legend.text = element_text(size = 14)
+)
+
+((paral1 + ylim(0, 4.5) +
+ paral5 + ylim(0, 4.5)) /
+(paral10 + ylim(0, 4.5) +
+ paral20 + ylim(0, 4.5))) &
+  theme_big -> sensfig
+
+
+sensfig
+
+ggsave("sensfig.png", sensfig, height = H, width = H * goldenratio,
        dpi = 600, device = "png")
 
 ```
+
+
+
+```{r comparison table}
+library(knitr)
+library(pander)
+xtable=seq(200,5800,200)
+ss5000 <- maxeigenval_v2%>%filter(ss==5800)%>%select(maxeigen_norm) %>% unlist() %>% as.numeric()
+ss100 <- maxeigenval_v2%>%filter(ss==100)%>%select(maxeigen_norm) %>% unlist() %>% as.numeric()
+
+
+maxeigenval_v2 %>%
+  filter(ss%in%xtable) %>% 
+  group_by(ss) %>%
+  summarise(min1=min(maxeigen_norm),max1=max(maxeigen_norm),mean1=mean(maxeigen_norm),sd1=sqrt(var(maxeigen_norm)),
+            ks=ks.test(x=maxeigen_norm,y=ss5000)$statistic,pval=ks.test(x=maxeigen_norm,y=ss5000)$p.value) %>% 
+  mutate(diff1=lag(sd1) - sd1) %>%
+  ungroup() -> table10
+
+
+###1 year age bands 
+ss5000 <- maxeigenval_1y%>%filter(ss==5800)%>%select(maxeigen_norm) %>% unlist() %>% as.numeric()
+ss100 <- maxeigenval_1y%>%filter(ss==100)%>%select(maxeigen_norm) %>% unlist() %>% as.numeric()
+
+
+maxeigenval_1y %>%
+  filter(ss%in%xtable) %>% 
+  group_by(ss) %>%
+  summarise(min1=min(maxeigen_norm),max1=max(maxeigen_norm),mean1=mean(maxeigen_norm),sd1=sqrt(var(maxeigen_norm)),
+            ks=ks.test(x=maxeigen_norm,y=ss5000)$statistic,pval=ks.test(x=maxeigen_norm,y=ss5000)$p.value) %>% 
+  mutate(diff1=lag(sd1) - sd1) %>%
+  ungroup() -> table1
+
+
+###5 year age bands 
+ss5000 <- maxeigenval_5y%>%filter(ss==5800)%>%select(maxeigen_norm) %>% unlist() %>% as.numeric()
+ss100 <- maxeigenval_5y%>%filter(ss==100)%>%select(maxeigen_norm) %>% unlist() %>% as.numeric()
+
+
+maxeigenval_5y %>%
+  filter(ss%in%xtable) %>% 
+  group_by(ss) %>%
+  summarise(min1=min(maxeigen_norm),max1=max(maxeigen_norm),mean1=mean(maxeigen_norm),sd1=sqrt(var(maxeigen_norm)),
+            ks=ks.test(x=maxeigen_norm,y=ss5000)$statistic,pval=ks.test(x=maxeigen_norm,y=ss5000)$p.value) %>% 
+  mutate(diff1=lag(sd1) - sd1) %>%
+  ungroup() -> table5
+
+
+###1 year age bands 
+ss5000 <- maxeigenval_20y%>%filter(ss==5800)%>%select(maxeigen_norm) %>% unlist() %>% as.numeric()
+ss100 <- maxeigenval_20y%>%filter(ss==100)%>%select(maxeigen_norm) %>% unlist() %>% as.numeric()
+
+
+maxeigenval_20y %>%
+  filter(ss%in%xtable) %>% 
+  group_by(ss) %>%
+  summarise(min1=min(maxeigen_norm),max1=max(maxeigen_norm),mean1=mean(maxeigen_norm),sd1=sqrt(var(maxeigen_norm)),
+            ks=ks.test(x=maxeigen_norm,y=ss5000)$statistic,pval=ks.test(x=maxeigen_norm,y=ss5000)$p.value) %>% 
+  mutate(diff1=lag(sd1) - sd1) %>%
+  ungroup() -> table20
+
+
+
+table1 %>%
+  left_join(table5,by=join_by(ss==ss)) %>%
+  left_join(table10,by=join_by(ss==ss)) %>%
+  left_join(table20,by=join_by(ss==ss)) %>%
+  filter(ss %in% xtable) -> tableout
+
+kable(tableout)
+
+write.csv(tableout,file="table_sensitivity.csv")
+
+
+
+```
+
+
+
